@@ -432,11 +432,12 @@ rag = LightRAG(
 
 ### Rerank Function Injection
 
-To enhance retrieval quality, documents can be re-ranked based on a more effective relevance scoring model. The `rerank.py` file provides three Reranker provider driver functions:
+To enhance retrieval quality, documents can be re-ranked based on a more effective relevance scoring model. The `rerank.py` file provides four Reranker provider driver functions:
 
 - **Cohere / vLLM**: `cohere_rerank`
 - **Jina AI**: `jina_rerank`
 - **Aliyun**: `ali_rerank`
+- **Cloud.ru Foundation Models**: `cloudru_rerank`
 
 Inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. For detailed usage, refer to `examples/rerank_example.py`.
 

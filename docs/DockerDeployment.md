@@ -204,6 +204,15 @@ RERANK_BINDING_API_KEY=local-key
 VLLM_RERANK_DEVICE=cpu
 ```
 
+For Cloud.ru-hosted reranking instead of local vLLM, use:
+
+```bash
+RERANK_BINDING=cloudru
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=https://foundation-models.api.cloud.ru/score
+RERANK_BINDING_API_KEY=your_cloudru_api_key_here
+```
+
 If LightRAG runs in Docker while vLLM runs on the host, the generated compose file rewrites those endpoints to:
 
 ```bash

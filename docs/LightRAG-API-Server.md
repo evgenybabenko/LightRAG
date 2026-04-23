@@ -472,6 +472,8 @@ lightrag-server --embedding-binding ollama --help
 
 > Please use OpenAI-compatible method to access LLMs deployed by OpenRouter or vLLM/SGLang. You can pass additional parameters to OpenRouter or vLLM/SGLang through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
 
+> If your OpenAI-compatible provider supports the OpenAI `Responses API` but rejects `/chat/completions`, set `OPENAI_USE_RESPONSES_API=true` in `.env`.
+
 Set the max_tokens to **prevent excessively long or endless output loop** during the entity relationship extraction phase for Large Language Model (LLM) responses.  The purpose of setting max_tokens parameter is to truncate LLM output before timeouts occur, thereby preventing document extraction failures. This addresses issues where certain text blocks (e.g., tables or citations) containing numerous entities and relationships can lead to overly long or even endless loop outputs from LLMs. This setting is particularly crucial for locally deployed, smaller-parameter models. Max tokens value can be calculated by this formula: `LLM_TIMEOUT * llm_output_tokens/second` (i.e. `180s * 50 tokens/s = 9000`)
 
 ```
@@ -544,6 +546,7 @@ Reranking query-recalled chunks can significantly enhance retrieval quality by r
 - **Cohere / vLLM**: Offers full API integration with Cohere AI's `v2/rerank` endpoint. As vLLM provides a Cohere-compatible reranker API, all reranker models deployed via vLLM are also supported.
 - **Jina AI**: Provides complete implementation compatibility with all Jina rerank models.
 - **Aliyun**: Features a custom implementation designed to support Aliyun's rerank API format.
+- **Cloud.ru Foundation Models**: Supports Cloud.ru's `/score` rerank API with `text_1` as the query and `text_2` as the candidate chunk list.
 
 The rerank provider is configured via the `.env` file. Below is an example configuration for a rerank model deployed locally using vLLM:
 
@@ -561,6 +564,15 @@ RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+Here is an example configuration for Cloud.ru Foundation Models:
+
+```
+RERANK_BINDING=cloudru
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=https://foundation-models.api.cloud.ru/score
+RERANK_BINDING_API_KEY=your_cloudru_api_key_here
 ```
 
 For comprehensive reranker configuration examples, please refer to the `env.example` file.
@@ -649,6 +661,7 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-4o-mini
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your-api-key
+# OPENAI_USE_RESPONSES_API=true
 
 ### Embedding Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
 # see also env.ollama-binding-options.example for fine tuning ollama
