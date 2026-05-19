@@ -550,7 +550,7 @@ See `test_neo4j.py` for a working example.
 PostgreSQL can provide a one-stop solution as KV store, VectorDB (pgvector), and GraphDB (apache AGE). PostgreSQL version 16.6 or higher is supported.
 
 - PostgreSQL is lightweight; the whole binary distribution including all necessary plugins can be zipped to 40MB: Ref to [Windows Release](https://github.com/ShanGor/apache-age-windows/releases/tag/PG17%2Fv1.5.0-rc0) as it is easy to install for Linux/Mac.
-- If you prefer Docker, start with this image to avoid hiccups (Default user password: rag/rag): https://hub.docker.com/r/gzdaniel/postgres-for-rag
+- If you prefer Docker in this repository, use the bundled `Dockerfile.postgres` and compose files. They build a PostgreSQL 16 image with both pgvector and Apache AGE from official multi-arch components.
 - How to start: see [examples/lightrag_gemini_postgres_demo.py](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_gemini_postgres_demo.py)
 - For high-performance graph database requirements, Neo4j is recommended as Apache AGE's performance is not as competitive.
 

@@ -661,6 +661,20 @@ class PostgreSQLDB:
             logger.warning(f"Could not create AGE extension: {e}")
             # Don't raise - let the system continue without AGE extension
 
+        await PostgreSQLDB.load_age_library(connection)
+
+    @staticmethod
+    async def load_age_library(connection: asyncpg.Connection) -> None:
+        """Load AGE into the current session when the connected role is allowed."""
+        try:
+            await connection.execute("LOAD 'age'")  # type: ignore
+        except asyncpg.exceptions.InsufficientPrivilegeError:
+            logger.debug(
+                "Skipping explicit AGE LOAD because the PostgreSQL role is not "
+                "allowed to load libraries; configure session_preload_libraries=age "
+                "for this database."
+            )
+
     @staticmethod
     async def configure_age(connection: asyncpg.Connection, graph_name: str) -> None:
         """Set the Apache AGE environment and creates a graph if it does not exist.
@@ -672,6 +686,7 @@ class PostgreSQLDB:
 
         """
         try:
+            await PostgreSQLDB.load_age_library(connection)
             await connection.execute(  # type: ignore
                 'SET search_path = ag_catalog, "$user", public'
             )
