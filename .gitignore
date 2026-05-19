@@ -25,6 +25,7 @@ docker-compose.*.yml
 !docker-compose.memory.yml
 !docker-compose.memory.synology.yml
 !docker-compose.memory.limbal-x.yml
+!docker-compose.podman.yml
 
 # Build / Distribution
 dist/
@@ -95,3 +96,6 @@ CLAUDE.md
 
 # Google Jules
 .jules/
+
+# native_parser/docx CLI output (audit JSONL + image dir)
+/parse_output/

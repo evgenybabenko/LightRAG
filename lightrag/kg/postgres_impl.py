@@ -3422,7 +3422,9 @@ class PGVectorStorage(BaseVectorStorage):
             len(batches),
         )
 
-        embedding_tasks = [self.embedding_func(batch) for batch in batches]
+        embedding_tasks = [
+            self.embedding_func(batch, context="document") for batch in batches
+        ]
         embedding_generation_start = time.perf_counter()
         embeddings_list = await asyncio.gather(*embedding_tasks)
         performance_timing_log(
@@ -3504,7 +3506,7 @@ class PGVectorStorage(BaseVectorStorage):
             embedding = query_embedding
         else:
             embeddings = await self.embedding_func(
-                [query], _priority=5
+                [query], context="query", _priority=5
             )  # higher priority for query
             embedding = embeddings[0]
 
@@ -5175,14 +5177,21 @@ class PGGraphStorage(BaseGraphStorage):
             edge_data (dict): dictionary of properties to set on the edge
         """
         # AGE does not support binding a full agtype map in ``SET r += $props``
-        # (verified on AGE 1.5.0). Keep endpoint identifiers parameterized and
-        # inline a safely escaped property map literal for the relationship payload.
-        props_literal = self._format_properties(edge_data)
+        # (verified on AGE 1.5.0), and the inlined literal form ``SET r += {map}``
+        # is also silently ignored for edges (though it works for nodes). Individual
+        # ``SET r.key = value`` assignments run without error but also do not persist.
+        # The only reliable way to write edge properties in AGE is to inline them
+        # directly in a CREATE clause. We use OPTIONAL MATCH to delete any existing
+        # edge first so the operation remains idempotent.
+        props_literal = self._format_properties(edge_data) if edge_data else "{}"
         cypher_query = f"""MATCH (source:base {{entity_id: $src_id}})
                      WITH source
                      MATCH (target:base {{entity_id: $tgt_id}})
-                     MERGE (source)-[r:DIRECTED]-(target)
-                     SET r += {props_literal}
+                     WITH source, target
+                     OPTIONAL MATCH (source)-[old:DIRECTED]-(target)
+                     DELETE old
+                     WITH source, target
+                     CREATE (source)-[r:DIRECTED {props_literal}]->(target)
                      RETURN r"""
 
         query = (

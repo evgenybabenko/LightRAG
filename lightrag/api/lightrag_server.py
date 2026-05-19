@@ -4,11 +4,12 @@ LightRAG FastAPI Server
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.openapi.docs import (
     get_swagger_ui_html,
     get_swagger_ui_oauth2_redirect_html,
 )
+import json
 import os
 import re
 import logging
@@ -32,6 +33,8 @@ from .config import (
     global_args,
     update_uvicorn_mode_config,
     get_default_host,
+    resolve_asymmetric_embedding_opt_in,
+    PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS,
 )
 from lightrag.utils import get_env_value
 from lightrag import LightRAG, __version__ as core_version
@@ -75,6 +78,15 @@ webui_description = os.getenv("WEBUI_DESCRIPTION")
 
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
+
+
+# Fixed WebUI mount path. Used as `app.mount(WEBUI_PATH, ...)` and as the
+# in-app component of `webuiPrefix` injected into window.__LIGHTRAG_CONFIG__
+# (which the browser sees as `LIGHTRAG_API_PREFIX + WEBUI_PATH + "/"`).
+# Not user-configurable: a single mount path simplifies the operator surface
+# and matches how LightRAG is deployed in practice. See
+# docs/MultiSiteDeployment.md.
+WEBUI_PATH = "/webui"
 
 
 class LLMConfigCache:
@@ -315,8 +327,9 @@ def create_app(args):
         "aws_bedrock",
         "jina",
         "gemini",
+        "voyageai",
     ]:
-        raise Exception("embedding binding not supported")
+        raise Exception(f"embedding binding '{args.embedding_binding}' not supported")
 
     # Set default hosts if not provided
     if args.llm_binding_host is None:
@@ -374,7 +387,6 @@ def create_app(args):
                     "Gunicorn Mode: postpone shared storage finalization to master process"
                 )
 
-    # Initialize FastAPI
     base_description = (
         "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
     )
@@ -383,13 +395,32 @@ def create_app(args):
         + (" (API-Key Enabled)" if api_key else "")
         + "\n\n[View ReDoc documentation](/redoc)"
     )
+
+    # Normalize the API prefix from CLI/env. Strip surrounding whitespace,
+    # strip a trailing slash, and treat empty/"/" as "no prefix". A leading
+    # slash is ensured. The WebUI mount path is fixed at "/webui" — see
+    # docs/MultiSiteDeployment.md for the rationale.
+    def _normalize_api_prefix(value: str | None) -> str:
+        if value is None:
+            return ""
+        value = value.strip()
+        if not value or value == "/":
+            return ""
+        if not value.startswith("/"):
+            value = "/" + value
+        return value.rstrip("/")
+
+    api_prefix = _normalize_api_prefix(getattr(args, "api_prefix", None))
+    webui_path = WEBUI_PATH
+
     app_kwargs = {
         "title": "LightRAG Server API",
         "description": swagger_description,
         "version": __api_version__,
-        "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
-        "docs_url": None,  # Disable default docs, we'll create custom endpoint
-        "redoc_url": "/redoc",  # Explicitly set redoc URL
+        "openapi_url": "/openapi.json",
+        "docs_url": None,  # custom endpoint for offline Swagger support
+        "redoc_url": "/redoc",
+        "root_path": api_prefix if api_prefix else None,
         "lifespan": lifespan,
     }
 
@@ -650,7 +681,14 @@ def create_app(args):
         return {}
 
     def create_optimized_embedding_function(
-        config_cache: LLMConfigCache, binding, model, host, api_key, args
+        config_cache: LLMConfigCache,
+        binding,
+        model,
+        host,
+        api_key,
+        args,
+        document_prefix=None,
+        query_prefix=None,
     ) -> EmbeddingFunc:
         """
         Create optimized embedding function and return an EmbeddingFunc instance
@@ -678,6 +716,7 @@ def create_app(args):
         provider_func = None
         provider_max_token_size = None
         provider_embedding_dim = None
+        provider_supports_asymmetric = False
 
         try:
             if binding == "openai":
@@ -708,15 +747,20 @@ def create_app(args):
                 from lightrag.llm.lollms import lollms_embed
 
                 provider_func = lollms_embed
+            elif binding == "voyageai":
+                from lightrag.llm.voyageai import voyageai_embed
 
+                provider_func = voyageai_embed
             # Extract attributes if provider is an EmbeddingFunc
             if provider_func and isinstance(provider_func, EmbeddingFunc):
                 provider_max_token_size = provider_func.max_token_size
                 provider_embedding_dim = provider_func.embedding_dim
+                provider_supports_asymmetric = provider_func.supports_asymmetric
                 logger.debug(
                     f"Extracted from {binding} provider: "
                     f"max_token_size={provider_max_token_size}, "
-                    f"embedding_dim={provider_embedding_dim}"
+                    f"embedding_dim={provider_embedding_dim}, "
+                    f"supports_asymmetric={provider_supports_asymmetric}"
                 )
         except ImportError as e:
             logger.warning(f"Could not import provider function for {binding}: {e}")
@@ -729,10 +773,23 @@ def create_app(args):
         final_embedding_dim = (
             args.embedding_dim if args.embedding_dim else provider_embedding_dim
         )
+        # Asymmetric embedding is explicit opt-in only. Provider-specific
+        # validation decides whether task parameters or prefixes are required.
+        asymmetric_opt_in = resolve_asymmetric_embedding_opt_in(
+            binding=binding,
+            embedding_asymmetric=args.embedding_asymmetric,
+            embedding_asymmetric_configured=args.embedding_asymmetric_configured,
+            query_prefix=query_prefix,
+            document_prefix=document_prefix,
+            query_prefix_configured=args.embedding_query_prefix_configured,
+            document_prefix_configured=args.embedding_document_prefix_configured,
+        )
 
         # Step 3: Create optimized embedding function (calls underlying function directly)
         # Note: When model is None, each binding will use its own default model
-        async def optimized_embedding_function(texts, embedding_dim=None):
+        async def optimized_embedding_function(
+            texts, embedding_dim=None, context="document"
+        ):
             try:
                 if binding == "lollms":
                     from lightrag.llm.lollms import lollms_embed
@@ -771,6 +828,12 @@ def create_app(args):
                         "api_key": api_key,
                         "options": ollama_options,
                     }
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
+                        if query_prefix:
+                            kwargs["query_prefix"] = query_prefix
+                        if document_prefix:
+                            kwargs["document_prefix"] = document_prefix
                     if model:
                         kwargs["embed_model"] = model
                     return await actual_func(**kwargs)
@@ -790,6 +853,12 @@ def create_app(args):
                     }
                     if model:
                         kwargs["model"] = model
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
+                        if query_prefix:
+                            kwargs["query_prefix"] = query_prefix
+                        if document_prefix:
+                            kwargs["document_prefix"] = document_prefix
                     return await actual_func(**kwargs)
                 elif binding == "aws_bedrock":
                     from lightrag.llm.bedrock import bedrock_embed
@@ -821,6 +890,9 @@ def create_app(args):
                     }
                     if model:
                         kwargs["model"] = model
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
+                        kwargs["task"] = None
                     return await actual_func(**kwargs)
                 elif binding == "gemini":
                     from lightrag.llm.gemini import gemini_embed
@@ -838,19 +910,38 @@ def create_app(args):
                         from lightrag.llm.binding_options import GeminiEmbeddingOptions
 
                         gemini_options = GeminiEmbeddingOptions.options_dict(args)
-
                     # Pass model only if provided, let function use its default (gemini-embedding-001)
                     kwargs = {
                         "texts": texts,
                         "base_url": host,
                         "api_key": api_key,
                         "embedding_dim": embedding_dim,
-                        "task_type": gemini_options.get(
-                            "task_type", "RETRIEVAL_DOCUMENT"
-                        ),
                     }
                     if model:
                         kwargs["model"] = model
+                    task_type = gemini_options.get("task_type")
+                    if task_type is not None:
+                        kwargs["task_type"] = task_type
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
+                    return await actual_func(**kwargs)
+                elif binding == "voyageai":
+                    from lightrag.llm.voyageai import voyageai_embed
+
+                    actual_func = (
+                        voyageai_embed.func
+                        if isinstance(voyageai_embed, EmbeddingFunc)
+                        else voyageai_embed
+                    )
+                    kwargs = {
+                        "texts": texts,
+                        "api_key": api_key,
+                        "embedding_dim": embedding_dim,
+                    }
+                    if model:
+                        kwargs["model"] = model
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
                     return await actual_func(**kwargs)
                 else:  # openai and compatible
                     from lightrag.llm.openai import openai_embed
@@ -869,6 +960,12 @@ def create_app(args):
                     }
                     if model:
                         kwargs["model"] = model
+                    if provider_supports_asymmetric and asymmetric_opt_in:
+                        kwargs["context"] = context
+                        if query_prefix:
+                            kwargs["query_prefix"] = query_prefix
+                        if document_prefix:
+                            kwargs["document_prefix"] = document_prefix
                     return await actual_func(**kwargs)
             except ImportError as e:
                 raise Exception(f"Failed to import {binding} embedding: {e}")
@@ -880,12 +977,21 @@ def create_app(args):
             max_token_size=final_max_token_size,
             send_dimensions=False,  # Will be set later based on binding requirements
             model_name=model,
+            supports_asymmetric=provider_supports_asymmetric and asymmetric_opt_in,
         )
 
-        # Log final embedding configuration
+        # Log final embedding configuration. Only include prefix info when
+        # prefixes will actually be applied (prefix-based asymmetric mode).
+        prefix_info = ""
+        if (
+            asymmetric_opt_in
+            and binding in PREFIX_ASYMMETRIC_EMBEDDING_BINDINGS
+            and (document_prefix or query_prefix)
+        ):
+            prefix_info = f" document_prefix={repr(document_prefix)} query_prefix={repr(query_prefix)}"
         logger.info(
             f"Embedding config: binding={binding} model={model} "
-            f"embedding_dim={final_embedding_dim} max_token_size={final_max_token_size}"
+            f"embedding_dim={final_embedding_dim} max_token_size={final_max_token_size}{prefix_info}"
         )
 
         return embedding_func_instance
@@ -933,6 +1039,8 @@ def create_app(args):
         host=args.embedding_binding_host,
         api_key=args.embedding_binding_api_key,
         args=args,
+        document_prefix=args.embedding_document_prefix,
+        query_prefix=args.embedding_query_prefix,
     )
 
     # Get embedding_send_dim from centralized configuration
@@ -1102,13 +1210,9 @@ def create_app(args):
         raise
 
     # Add routes
-    app.include_router(
-        create_document_routes(
-            rag,
-            doc_manager,
-            api_key,
-        )
-    )
+    # root_path is set on the app for reverse proxy support;
+    # routes stay at their natural paths and are prefixed by the proxy or uvicorn --root-path
+    app.include_router(create_document_routes(rag, doc_manager, api_key))
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
 
@@ -1136,12 +1240,18 @@ def create_app(args):
         return get_swagger_ui_oauth2_redirect_html()
 
     @app.get("/")
-    async def redirect_to_webui():
-        """Redirect root path based on WebUI availability"""
+    async def redirect_to_webui(request: Request):
+        """Redirect root path based on WebUI availability.
+
+        Prepend the ASGI root_path so that, behind a reverse proxy, the
+        absolute redirect target keeps the configured prefix instead of
+        bypassing it.
+        """
+        root = request.scope.get("root_path", "")
         if webui_assets_exist:
-            return RedirectResponse(url="/webui")
+            return RedirectResponse(url=f"{root}{webui_path}/")
         else:
-            return RedirectResponse(url="/docs")
+            return RedirectResponse(url=f"{root}/docs")
 
     @app.get("/auth-status")
     async def get_auth_status():
@@ -1314,12 +1424,49 @@ def create_app(args):
             logger.error(f"Error getting health status: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    # Custom StaticFiles class for smart caching
+    # Pre-render the runtime-config <script> once. The browser-visible URL
+    # prefixes are NOT baked into the bundle anymore — index.html ships with
+    # a placeholder comment that we replace with this snippet on every HTML
+    # response, so one build serves any reverse-proxy mount point.
+    #
+    # `</` → `<\/` escaping prevents an embedded "</script>" sequence from
+    # breaking out of the inline script (defense-in-depth — values come from
+    # admin config, not user input).
+    _runtime_config_payload = json.dumps(
+        {
+            "apiPrefix": api_prefix,
+            "webuiPrefix": f"{api_prefix}{webui_path}/",
+        }
+    ).replace("</", "<\\/")
+    runtime_config_script = (
+        f"<script>window.__LIGHTRAG_CONFIG__ = {_runtime_config_payload};</script>"
+    )
+
+    # Custom StaticFiles class for smart caching + runtime config injection
     class SmartStaticFiles(StaticFiles):  # Renamed from NoCacheStaticFiles
+        # Replaced in index.html on every request. Keep in sync with
+        # lightrag_webui/index.html.
+        RUNTIME_CONFIG_PLACEHOLDER = b"<!-- __LIGHTRAG_RUNTIME_CONFIG__ -->"
+
         async def get_response(self, path: str, scope):
             response = await super().get_response(path, scope)
 
-            is_html = path.endswith(".html") or response.media_type == "text/html"
+            # `path` is empty when accessing the mount root (StaticFiles
+            # rewrites it to index.html internally) — match on media_type
+            # too so we still inject in that case.
+            is_html = (
+                path.endswith(".html")
+                or path == ""
+                or path.endswith("/")
+                or getattr(response, "media_type", None) == "text/html"
+            )
+
+            if (
+                is_html
+                and getattr(response, "status_code", 0) == 200
+                and isinstance(response, FileResponse)
+            ):
+                response = self._inject_runtime_config(response)
 
             if is_html:
                 response.headers["Cache-Control"] = (
@@ -1343,6 +1490,32 @@ def create_app(args):
 
             return response
 
+        def _inject_runtime_config(self, response: FileResponse) -> Response:
+            """Replace the runtime-config placeholder in index.html.
+
+            Returns the original FileResponse if the placeholder is absent
+            (older build, or a non-index HTML file) — avoids breaking
+            previously-working bundles during upgrades.
+            """
+            try:
+                content = Path(response.path).read_bytes()
+            except OSError as e:
+                logger.warning(
+                    "Could not read %s for runtime config injection: %s",
+                    response.path,
+                    e,
+                )
+                return response
+
+            if self.RUNTIME_CONFIG_PLACEHOLDER not in content:
+                return response
+
+            new_content = content.replace(
+                self.RUNTIME_CONFIG_PLACEHOLDER,
+                runtime_config_script.encode("utf-8"),
+            )
+            return Response(content=new_content, media_type="text/html")
+
     # Mount Swagger UI static files for offline support
     swagger_static_dir = Path(__file__).parent / "static" / "swagger-ui"
     if swagger_static_dir.exists():
@@ -1357,22 +1530,23 @@ def create_app(args):
         static_dir = Path(__file__).parent / "webui"
         static_dir.mkdir(exist_ok=True)
         app.mount(
-            "/webui",
+            webui_path,
             SmartStaticFiles(
                 directory=static_dir, html=True, check_dir=True
             ),  # Use SmartStaticFiles
             name="webui",
         )
-        logger.info("WebUI assets mounted at /webui")
+        logger.info(f"WebUI assets mounted at {webui_path}")
     else:
-        logger.info("WebUI assets not available, /webui route not mounted")
+        logger.info("WebUI assets not available, WebUI route not mounted")
 
-        # Add redirect for /webui when assets are not available
-        @app.get("/webui")
-        @app.get("/webui/")
-        async def webui_redirect_to_docs():
-            """Redirect /webui to /docs when WebUI is not available"""
-            return RedirectResponse(url="/docs")
+        # Add redirect for WebUI path when assets are not available
+        @app.get(webui_path)
+        @app.get(f"{webui_path}/")
+        async def webui_redirect_to_docs(request: Request):
+            """Redirect WebUI path to /docs when WebUI is not available."""
+            root = request.scope.get("root_path", "")
+            return RedirectResponse(url=f"{root}/docs")
 
     return app
 
