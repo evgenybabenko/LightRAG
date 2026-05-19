@@ -128,14 +128,39 @@ def _normalize_responses_usage(usage: Any) -> dict[str, int]:
     }
 
 
+def _get_response_field(value: Any, field_name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(field_name)
+    return getattr(value, field_name, None)
+
+
 def _extract_responses_text(response: Any) -> str:
-    parsed_output = getattr(response, "output_parsed", None)
+    parsed_output = _get_response_field(response, "output_parsed")
     if parsed_output is not None:
         return parsed_output.model_dump_json()
 
-    output_text = getattr(response, "output_text", None)
+    output_text = _get_response_field(response, "output_text")
     if output_text:
         return output_text
+
+    output = _get_response_field(response, "output") or []
+    content_texts: list[str] = []
+    for output_item in output:
+        content = _get_response_field(output_item, "content") or []
+        if isinstance(content, (str, bytes)):
+            content = [content]
+        for content_item in content:
+            if isinstance(content_item, bytes):
+                text = content_item.decode("utf-8", errors="replace")
+            elif isinstance(content_item, str):
+                text = content_item
+            else:
+                text = _get_response_field(content_item, "text")
+            if isinstance(text, str) and text:
+                content_texts.append(text)
+
+    if content_texts:
+        return "\n".join(content_texts)
 
     raise InvalidResponseError("Received empty content from OpenAI Responses API")
 

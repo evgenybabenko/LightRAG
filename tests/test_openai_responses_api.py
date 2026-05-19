@@ -78,6 +78,36 @@ class _FakeOpenAIClient:
         self.closed = True
 
 
+def test_extract_responses_text_reads_nested_output_content():
+    response = SimpleNamespace(
+        output_text=None,
+        output=[
+            SimpleNamespace(
+                content=[
+                    SimpleNamespace(type="output_text", text="nested ok"),
+                ]
+            )
+        ],
+    )
+
+    assert openai_module._extract_responses_text(response) == "nested ok"
+
+
+def test_extract_responses_text_reads_nested_dict_output_content():
+    response = {
+        "output": [
+            {
+                "content": [
+                    {"type": "output_text", "text": "first"},
+                    {"type": "output_text", "text": "second"},
+                ]
+            }
+        ]
+    }
+
+    assert openai_module._extract_responses_text(response) == "first\nsecond"
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_openai_complete_uses_responses_api_when_enabled(monkeypatch):
