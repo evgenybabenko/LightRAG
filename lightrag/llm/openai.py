@@ -88,6 +88,83 @@ EMBEDDING_USE_BASE64: bool = os.getenv("EMBEDDING_USE_BASE64", "true").lower() i
 )
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes", "on")
+
+
+def _should_use_responses_api(explicit_value: bool | None) -> bool:
+    if explicit_value is not None:
+        return explicit_value
+    return _env_flag("OPENAI_USE_RESPONSES_API", False)
+
+
+def _split_responses_instructions_and_input(
+    messages: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    instructions: list[str] = []
+    response_input: list[dict[str, Any]] = []
+
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content")
+        if role == "system":
+            if isinstance(content, str) and content.strip():
+                instructions.append(content)
+            continue
+        response_input.append(message)
+
+    merged_instructions = "\n\n".join(instructions) if instructions else None
+    return merged_instructions, response_input
+
+
+def _normalize_responses_usage(usage: Any) -> dict[str, int]:
+    return {
+        "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+        "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+        "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+    }
+
+
+def _get_response_field(value: Any, field_name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(field_name)
+    return getattr(value, field_name, None)
+
+
+def _extract_responses_text(response: Any) -> str:
+    parsed_output = _get_response_field(response, "output_parsed")
+    if parsed_output is not None:
+        return parsed_output.model_dump_json()
+
+    output_text = _get_response_field(response, "output_text")
+    if output_text:
+        return output_text
+
+    output = _get_response_field(response, "output") or []
+    content_texts: list[str] = []
+    for output_item in output:
+        content = _get_response_field(output_item, "content") or []
+        if isinstance(content, (str, bytes)):
+            content = [content]
+        for content_item in content:
+            if isinstance(content_item, bytes):
+                text = content_item.decode("utf-8", errors="replace")
+            elif isinstance(content_item, str):
+                text = content_item
+            else:
+                text = _get_response_field(content_item, "text")
+            if isinstance(text, str) and text:
+                content_texts.append(text)
+
+    if content_texts:
+        return "\n".join(content_texts)
+
+    raise InvalidResponseError("Received empty content from OpenAI Responses API")
+
+
 def _get_tiktoken_encoding_for_model(model: str) -> Any:
     """Get tiktoken encoding for the specified model with caching.
 
@@ -322,6 +399,10 @@ async def openai_complete_if_cache(
     logger.debug("===== Sending Query to LLM =====")
 
     messages = kwargs.pop("messages", messages)
+    response_format = kwargs.pop("response_format", None)
+    use_responses_api = _should_use_responses_api(
+        kwargs.pop("use_responses_api", None)
+    )
 
     # Add explicit parameters back to kwargs so they're passed to OpenAI API
     if stream is not None:
@@ -334,10 +415,47 @@ async def openai_complete_if_cache(
     api_model = azure_deployment if use_azure and azure_deployment else model
 
     try:
+        if use_responses_api:
+            response_kwargs = dict(kwargs)
+            response_stream = bool(response_kwargs.pop("stream", False))
+            response_kwargs.pop("timeout", None)
+            max_tokens = response_kwargs.pop("max_tokens", None)
+            if max_tokens is not None and "max_output_tokens" not in response_kwargs:
+                response_kwargs["max_output_tokens"] = max_tokens
+
+            instructions, response_input = _split_responses_instructions_and_input(
+                messages
+            )
+            if instructions:
+                response_kwargs["instructions"] = instructions
+            if response_input:
+                response_kwargs["input"] = response_input
+            else:
+                response_kwargs["input"] = prompt
+
+            if response_format is not None:
+                if response_stream:
+                    raise InvalidResponseError(
+                        "Structured output streaming is not supported with Responses API"
+                    )
+                response = await openai_async_client.responses.parse(
+                    model=api_model,
+                    text_format=response_format,
+                    **response_kwargs,
+                )
+            else:
+                response = await openai_async_client.responses.create(
+                    model=api_model,
+                    stream=response_stream,
+                    **response_kwargs,
+                )
         # Don't use async with context manager, use client directly
-        if "response_format" in kwargs:
+        elif response_format is not None:
             response = await openai_async_client.chat.completions.parse(
-                model=api_model, messages=messages, **kwargs
+                model=api_model,
+                messages=messages,
+                response_format=response_format,
+                **kwargs,
             )
         else:
             response = await openai_async_client.chat.completions.create(
@@ -388,6 +506,23 @@ async def openai_complete_if_cache(
             try:
                 iteration_started = True
                 async for chunk in response:
+                    if use_responses_api:
+                        event_type = getattr(chunk, "type", None)
+                        if event_type == "response.completed":
+                            completed_response = getattr(chunk, "response", None)
+                            completed_usage = getattr(completed_response, "usage", None)
+                            if completed_usage is not None:
+                                final_chunk_usage = completed_usage
+                        if (
+                            event_type == "response.output_text.delta"
+                            and getattr(chunk, "delta", None)
+                        ):
+                            delta = chunk.delta
+                            if r"\u" in delta:
+                                delta = safe_unicode_decode(delta.encode("utf-8"))
+                            yield delta
+                        continue
+
                     # Check if this chunk has usage information (final chunk)
                     if hasattr(chunk, "usage") and chunk.usage:
                         final_chunk_usage = chunk.usage
@@ -468,13 +603,18 @@ async def openai_complete_if_cache(
                 # After streaming is complete, track token usage
                 if token_tracker and final_chunk_usage:
                     # Use actual usage from the API
-                    token_counts = {
-                        "prompt_tokens": getattr(final_chunk_usage, "prompt_tokens", 0),
-                        "completion_tokens": getattr(
-                            final_chunk_usage, "completion_tokens", 0
-                        ),
-                        "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
-                    }
+                    if use_responses_api:
+                        token_counts = _normalize_responses_usage(final_chunk_usage)
+                    else:
+                        token_counts = {
+                            "prompt_tokens": getattr(
+                                final_chunk_usage, "prompt_tokens", 0
+                            ),
+                            "completion_tokens": getattr(
+                                final_chunk_usage, "completion_tokens", 0
+                            ),
+                            "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
+                        }
                     token_tracker.add_usage(token_counts)
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
                 elif token_tracker:
@@ -552,6 +692,20 @@ async def openai_complete_if_cache(
 
     else:
         try:
+            if use_responses_api:
+                final_content = _extract_responses_text(response)
+
+                if r"\u" in final_content:
+                    final_content = safe_unicode_decode(final_content.encode("utf-8"))
+
+                if token_tracker and hasattr(response, "usage"):
+                    token_tracker.add_usage(_normalize_responses_usage(response.usage))
+
+                logger.debug(f"Response content len: {len(final_content)}")
+                verbose_debug(f"Response: {response}")
+
+                return final_content
+
             if (
                 not response
                 or not response.choices

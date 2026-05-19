@@ -2156,7 +2156,8 @@ confirm_required_yes_no() {{ return 0; }}
 env_storage_flow
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: gzdaniel/postgres-for-rag:16.6" in result
+    assert "image: lightrag-postgres:local" in result
+    assert "dockerfile: Dockerfile.postgres" in result
     assert 'POSTGRES_USER: "updated-user"' in result
 
 
@@ -2220,7 +2221,8 @@ confirm_required_yes_no() {{ return 0; }}
 env_storage_flow
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: gzdaniel/postgres-for-rag:16.6" in result
+    assert "image: lightrag-postgres:local" in result
+    assert "dockerfile: Dockerfile.postgres" in result
     assert "image: neo4j:5-community" in result
     assert "registry.example.com/postgres-for-rag:patched" not in result
     assert "registry.example.com/neo4j:custom" not in result

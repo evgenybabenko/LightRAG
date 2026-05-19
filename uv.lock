@@ -2573,6 +2573,7 @@ dependencies = [
     { name = "setuptools" },
     { name = "tenacity" },
     { name = "tiktoken" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "xlsxwriter" },
 ]
 
@@ -2887,6 +2888,7 @@ requires-dist = [
     { name = "tenacity", marker = "extra == 'api'" },
     { name = "tiktoken" },
     { name = "tiktoken", marker = "extra == 'api'" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.0" },
     { name = "uvicorn", marker = "extra == 'api'" },
     { name = "voyageai", marker = "extra == 'offline-llm'", specifier = ">=0.2.0,<1.0.0" },
     { name = "xlsxwriter", specifier = ">=3.1.0" },

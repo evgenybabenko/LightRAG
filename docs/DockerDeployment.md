@@ -204,6 +204,15 @@ RERANK_BINDING_API_KEY=local-key
 VLLM_RERANK_DEVICE=cpu
 ```
 
+For Cloud.ru-hosted reranking instead of local vLLM, use:
+
+```bash
+RERANK_BINDING=cloudru
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=https://foundation-models.api.cloud.ru/score
+RERANK_BINDING_API_KEY=your_cloudru_api_key_here
+```
+
 If LightRAG runs in Docker while vLLM runs on the host, the generated compose file rewrites those endpoints to:
 
 ```bash
@@ -231,17 +240,24 @@ This keeps generated host mounts under the same `./data` root used by the defaul
 
 ### PostgreSQL image
 
-The interactive setup defaults PostgreSQL to `gzdaniel/postgres-for-rag:16.6`. This image bundles both Apache AGE and pgvector so the generated stack works with `PGGraphStorage` and `PGVectorStorage` without extra extension setup.
+The interactive setup now builds PostgreSQL locally with `Dockerfile.postgres`.
+That image combines the official multi-architecture `pgvector/pgvector:0.8.2-pg16-bookworm`
+base with Apache AGE `PG16/v1.6.0-rc0`, so the generated stack still supports both
+`PGGraphStorage` and `PGVectorStorage` without forcing `linux/amd64` emulation on Apple Silicon.
 
-**Important Note**: If PGGraphStorage is not required for vector storage, you may replace the upper docker image with the latest official pgvector image `pgvector/pgvector:pg18`. Please note that data file formats are incompatible across different PostgreSQL major versions; once this Docker image is deployed, it cannot be rolled back to a previous version.
+**Important Note**: If PGGraphStorage is not required, you may replace that build with the latest
+official pgvector image such as `pgvector/pgvector:pg18`. Please note that data file formats are
+incompatible across different PostgreSQL major versions; once this Docker image is deployed, it
+cannot be rolled back to a previous version.
 
 ### Updates
 
 To update the Docker container:
 ```bash
 docker compose pull
+docker compose build --pull postgres
 docker compose down
-docker compose up
+docker compose up -d
 ```
 
 ### Offline deployment

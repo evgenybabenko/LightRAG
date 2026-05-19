@@ -1479,10 +1479,11 @@ reset_state
 load_existing_env_if_present
 add_docker_service postgres
 add_docker_service vllm-embed
-generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
+    generate_docker_compose "$REPO_ROOT/docker-compose.final.yml\"
 """)
     result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: gzdaniel/postgres-for-rag:16.6" in result
+    assert "image: lightrag-postgres:local" in result
+    assert "dockerfile: Dockerfile.postgres" in result
     assert "image: vllm/vllm-openai-cpu:latest" in result
     assert "registry.example.com/postgres-for-rag:patched" not in result
     assert "vllm/vllm-openai-cpu:patched" not in result

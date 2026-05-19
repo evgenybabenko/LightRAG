@@ -1,0 +1,42 @@
+services:
+  lightrag-project-limbal-x:
+    container_name: lightrag-project-limbal-x
+    image: ${LIGHTRAG_MEMORY_IMAGE:-lightrag-memory:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env.memory
+      - .env.memory.limbal-x
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "9621"
+      WORKSPACE: "default"
+      WORKING_DIR: "/app/data/rag_storage"
+      INPUT_DIR: "/app/data/inputs"
+      POSTGRES_HOST: "lightrag-postgres"
+      POSTGRES_PORT: "5432"
+      WEBUI_TITLE: "LightRAG Limbal-X Memory"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${MEMORY_LIMBAL_X_BIND:-127.0.0.1}:${MEMORY_LIMBAL_X_PORT:-9633}:9621"
+    volumes:
+      - lightrag_memory_limbal_x_storage:/app/data/rag_storage
+      - lightrag_memory_limbal_x_inputs:/app/data/inputs
+      - lightrag_memory_tiktoken:/app/data/tiktoken
+    depends_on:
+      lightrag-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  lightrag_memory_limbal_x_storage:
+    external: true
+    name: lightrag_memory_limbal_x_storage
+  lightrag_memory_limbal_x_inputs:
+    external: true
+    name: lightrag_memory_limbal_x_inputs
+  lightrag_memory_tiktoken:
+    external: true
+    name: lightrag_memory_tiktoken

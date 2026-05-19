@@ -1,3 +1,5 @@
+name: lightrag
+
 services:
   lightrag:
     image: ghcr.io/hkuds/lightrag:latest
