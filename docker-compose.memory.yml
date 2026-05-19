@@ -1,0 +1,114 @@
+name: lightrag-memory
+
+services:
+  lightrag-postgres:
+    container_name: lightrag-postgres
+    image: lightrag-postgres:local
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    env_file:
+      - .env.memory
+    ports:
+      - "${MEMORY_POSTGRES_BIND:-127.0.0.1}:${MEMORY_POSTGRES_PORT:-54330}:5432"
+    volumes:
+      - lightrag_memory_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  lightrag-memory-bootstrap:
+    container_name: lightrag-memory-bootstrap
+    image: lightrag-memory:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env.memory
+      - .env.memory.personal
+      - .env.memory.limbal
+    environment:
+      MEMORY_POSTGRES_HOST: lightrag-postgres
+      MEMORY_POSTGRES_PORT: "5432"
+    entrypoint: ["lightrag-memory"]
+    command: ["bootstrap-db"]
+    depends_on:
+      lightrag-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  lightrag-personal:
+    container_name: lightrag-personal
+    image: lightrag-memory:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env.memory
+      - .env.memory.personal
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "9621"
+      WORKSPACE: "default"
+      WORKING_DIR: "/app/data/rag_storage"
+      INPUT_DIR: "/app/data/inputs"
+      POSTGRES_HOST: "lightrag-postgres"
+      POSTGRES_PORT: "5432"
+      WEBUI_TITLE: "LightRAG Personal Memory"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${MEMORY_PERSONAL_BIND:-127.0.0.1}:${MEMORY_PERSONAL_PORT:-9631}:9621"
+    volumes:
+      - lightrag_memory_personal_storage:/app/data/rag_storage
+      - lightrag_memory_personal_inputs:/app/data/inputs
+      - lightrag_memory_tiktoken:/app/data/tiktoken
+    depends_on:
+      lightrag-memory-bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  lightrag-project-limbal:
+    container_name: lightrag-project-limbal
+    image: lightrag-memory:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env.memory
+      - .env.memory.limbal
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "9621"
+      WORKSPACE: "default"
+      WORKING_DIR: "/app/data/rag_storage"
+      INPUT_DIR: "/app/data/inputs"
+      POSTGRES_HOST: "lightrag-postgres"
+      POSTGRES_PORT: "5432"
+      WEBUI_TITLE: "LightRAG Limbal Memory"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${MEMORY_LIMBAL_BIND:-127.0.0.1}:${MEMORY_LIMBAL_PORT:-9632}:9621"
+    volumes:
+      - lightrag_memory_limbal_storage:/app/data/rag_storage
+      - lightrag_memory_limbal_inputs:/app/data/inputs
+      - lightrag_memory_tiktoken:/app/data/tiktoken
+    depends_on:
+      lightrag-memory-bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  lightrag_memory_postgres:
+  lightrag_memory_personal_storage:
+  lightrag_memory_personal_inputs:
+  lightrag_memory_limbal_storage:
+  lightrag_memory_limbal_inputs:
+  lightrag_memory_tiktoken:

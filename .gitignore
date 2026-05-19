@@ -14,9 +14,17 @@ venv/
 # Enviroment Variable Files
 .env
 .env.backup.*
+.env.memory
+.env.memory.*
+!.env.memory.example
+!.env.memory.personal.example
+!.env.memory.limbal.example
 
 # Generated Docker Compose files (output of setup wizard)
 docker-compose.*.yml
+!docker-compose.memory.yml
+!docker-compose.memory.synology.yml
+!docker-compose.memory.limbal-x.yml
 
 # Build / Distribution
 dist/
