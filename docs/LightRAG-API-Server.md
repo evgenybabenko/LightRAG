@@ -111,7 +111,17 @@ EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
-> **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. Therefore, when changing embedding models, it is necessary to delete the existing vector-related tables and allow LightRAG to recreate them with the new dimensions.
+> **Important Note**: The embedding model and asymmetric embedding configuration must be determined before document indexing, and the same settings must be used during the query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. When changing the embedding model, embedding dimension, `EMBEDDING_ASYMMETRIC`, query/document prefixes, or provider task behavior, clear the existing LightRAG workspace/vector data and re-index the source files.
+
+#### Asymmetric Embedding Configuration
+
+LightRAG uses symmetric embeddings by default. Query/document asymmetric embeddings are enabled only when `EMBEDDING_ASYMMETRIC=true` is explicitly set.
+
+- Provider task bindings such as `jina`, `gemini`, and `voyageai` use provider parameters (`task` / `task_type` / `input_type`) and should not use query/document prefixes.
+- Prefix-based bindings such as `openai`, `azure_openai`, and `ollama` require both `EMBEDDING_QUERY_PREFIX` and `EMBEDDING_DOCUMENT_PREFIX`. Use `NO_PREFIX` for a side that should intentionally have no prefix.
+- Any valid change to asymmetric embedding settings requires clearing existing data and re-indexing files.
+
+For the full validation rules and examples, see [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md).
 
 ### Create .env File With Setup Tool
 
@@ -453,15 +463,29 @@ Most of the configurations come with default settings; check out the details in 
 
 ### LLM and Embedding Backend Supported
 
-LightRAG supports binding to various LLM/Embedding backends:
+LightRAG supports binding to various LLM backends:
 
 * ollama
 * openai (including openai compatible)
 * azure_openai
 * lollms
 * aws_bedrock
+* gemini
+
+LightRAG supports binding to various Embedding backends:
+
+* lollms
+* ollama
+* openai (including openai compatible)
+* azure_openai
+* aws_bedrock
+* jina
+* gemini
+* voyageai
 
 Use environment variables `LLM_BINDING` or CLI argument `--llm-binding` to select the LLM backend type. Use environment variables `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select the Embedding backend type.
+
+Asymmetric embedding is explicit opt-in. Set `EMBEDDING_ASYMMETRIC=true` only when the selected embedding backend supports either provider task parameters or task prefixes. See [Asymmetric Embedding Configuration](./AsymmetricEmbedding.md) before changing these settings, because existing data must be cleared and files re-indexed after any change.
 
 For LLM and embedding configuration examples, please refer to the `env.example` file in the project's root directory. To view the complete list of configurable options for OpenAI and Ollama-compatible LLM interfaces, use the following commands:
 ```
@@ -471,6 +495,8 @@ lightrag-server --embedding-binding ollama --help
 ```
 
 > Please use OpenAI-compatible method to access LLMs deployed by OpenRouter or vLLM/SGLang. You can pass additional parameters to OpenRouter or vLLM/SGLang through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
+
+> If your OpenAI-compatible provider supports the OpenAI `Responses API` but rejects `/chat/completions`, set `OPENAI_USE_RESPONSES_API=true` in `.env`.
 
 Set the max_tokens to **prevent excessively long or endless output loop** during the entity relationship extraction phase for Large Language Model (LLM) responses.  The purpose of setting max_tokens parameter is to truncate LLM output before timeouts occur, thereby preventing document extraction failures. This addresses issues where certain text blocks (e.g., tables or citations) containing numerous entities and relationships can lead to overly long or even endless loop outputs from LLMs. This setting is particularly crucial for locally deployed, smaller-parameter models. Max tokens value can be calculated by this formula: `LLM_TIMEOUT * llm_output_tokens/second` (i.e. `180s * 50 tokens/s = 9000`)
 
@@ -535,7 +561,7 @@ When switching the storage implementation in LightRAG, the LLM cache can be migr
 | --ssl-certfile        | None          | Path to SSL certificate file (required if --ssl is enabled)                                                                     |
 | --ssl-keyfile         | None          | Path to SSL private key file (required if --ssl is enabled)                                                                     |
 | --llm-binding         | ollama        | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai, aws_bedrock)                                                          |
-| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock)                                                                   |
+| --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai, aws_bedrock, jina, gemini, voyageai)                                           |
 
 ### Reranking Configuration
 
@@ -544,6 +570,7 @@ Reranking query-recalled chunks can significantly enhance retrieval quality by r
 - **Cohere / vLLM**: Offers full API integration with Cohere AI's `v2/rerank` endpoint. As vLLM provides a Cohere-compatible reranker API, all reranker models deployed via vLLM are also supported.
 - **Jina AI**: Provides complete implementation compatibility with all Jina rerank models.
 - **Aliyun**: Features a custom implementation designed to support Aliyun's rerank API format.
+- **Cloud.ru Foundation Models**: Supports Cloud.ru's `/score` rerank API with `text_1` as the query and `text_2` as the candidate chunk list.
 
 The rerank provider is configured via the `.env` file. Below is an example configuration for a rerank model deployed locally using vLLM:
 
@@ -561,6 +588,15 @@ RERANK_BINDING=aliyun
 RERANK_MODEL=gte-rerank-v2
 RERANK_BINDING_HOST=https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
+```
+
+Here is an example configuration for Cloud.ru Foundation Models:
+
+```
+RERANK_BINDING=cloudru
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_BINDING_HOST=https://foundation-models.api.cloud.ru/score
+RERANK_BINDING_API_KEY=your_cloudru_api_key_here
 ```
 
 For comprehensive reranker configuration examples, please refer to the `env.example` file.
@@ -649,6 +685,7 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-4o-mini
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your-api-key
+# OPENAI_USE_RESPONSES_API=true
 
 ### Embedding Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
 # see also env.ollama-binding-options.example for fine tuning ollama
@@ -656,6 +693,11 @@ EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
+# Optional asymmetric embedding for prefix-based models:
+# EMBEDDING_ASYMMETRIC=true
+# EMBEDDING_QUERY_PREFIX="search_query: "
+# EMBEDDING_DOCUMENT_PREFIX="search_document: "
+# Use NO_PREFIX for a side that should intentionally have no prefix.
 
 ### For JWT Auth
 # AUTH_ACCOUNTS='admin:{bcrypt}$2b$12$replace-with-generated-hash,user1:pass456'

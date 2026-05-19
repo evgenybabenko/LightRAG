@@ -188,8 +188,8 @@ async def generic_rerank_api(
     top_n: Optional[int] = None,
     return_documents: Optional[bool] = None,
     extra_body: Optional[Dict[str, Any]] = None,
-    response_format: str = "standard",  # "standard" (Jina/Cohere) or "aliyun"
-    request_format: str = "standard",  # "standard" (Jina/Cohere) or "aliyun"
+    response_format: str = "standard",  # "standard" (Jina/Cohere), "aliyun", or "cloudru"
+    request_format: str = "standard",  # "standard" (Jina/Cohere), "aliyun", or "cloudru"
     enable_chunking: bool = False,
     max_tokens_per_doc: int = 480,
 ) -> List[Dict[str, Any]]:
@@ -205,7 +205,7 @@ async def generic_rerank_api(
         top_n: Number of top results to return
         return_documents: Whether to return document text (Jina only)
         extra_body: Additional body parameters
-        response_format: Response format type ("standard" for Jina/Cohere, "aliyun" for Aliyun)
+        response_format: Response format type ("standard" for Jina/Cohere, "aliyun" for Aliyun, "cloudru" for Cloud.ru)
         request_format: Request format type
         enable_chunking: Whether to chunk documents exceeding token limit
         max_tokens_per_doc: Maximum tokens per document for chunking
@@ -263,6 +263,16 @@ async def generic_rerank_api(
         # Add extra parameters to parameters object
         if extra_body:
             payload["parameters"].update(extra_body)
+    elif request_format == "cloudru":
+        payload = {
+            "model": model,
+            "encoding_format": "float",
+            "text_1": query,
+            "text_2": documents,
+        }
+
+        if extra_body:
+            payload.update(extra_body)
     else:
         # Standard format for Jina/Cohere/OpenAI
         payload = {
@@ -333,6 +343,14 @@ async def generic_rerank_api(
                         f"Expected 'results' to be list, got {type(results)}: {results}"
                     )
                     results = []
+            elif response_format == "cloudru":
+                # Cloud.ru format: {"data": [{"index": 0, "score": 0.9}, ...]}
+                results = response_json.get("data", [])
+                if not isinstance(results, list):
+                    logger.warning(
+                        f"Expected 'data' to be list, got {type(results)}: {results}"
+                    )
+                    results = []
             else:
                 raise ValueError(f"Unsupported response format: {response_format}")
 
@@ -341,10 +359,20 @@ async def generic_rerank_api(
                 return []
 
             # Standardize return format
-            standardized_results = [
-                {"index": result["index"], "relevance_score": result["relevance_score"]}
-                for result in results
-            ]
+            if response_format == "cloudru":
+                standardized_results = [
+                    {"index": result["index"], "relevance_score": result["score"]}
+                    for result in results
+                ]
+            else:
+                standardized_results = [
+                    {"index": result["index"], "relevance_score": result["relevance_score"]}
+                    for result in results
+                ]
+
+            standardized_results.sort(
+                key=lambda x: x["relevance_score"], reverse=True
+            )
 
             # Aggregate chunk scores back to original documents if chunking was enabled
             if enable_chunking and doc_indices:
@@ -361,6 +389,14 @@ async def generic_rerank_api(
                     and len(standardized_results) > original_top_n
                 ):
                     standardized_results = standardized_results[:original_top_n]
+            elif (
+                request_format == "cloudru"
+                and original_top_n is not None
+                and len(standardized_results) > original_top_n
+            ):
+                # Cloud.ru /score does not expose a provider-side top_n filter,
+                # so apply it client-side after normalizing provider scores.
+                standardized_results = standardized_results[:original_top_n]
 
             return standardized_results
 
@@ -510,6 +546,42 @@ async def ali_rerank(
         extra_body=extra_body,
         response_format="aliyun",
         request_format="aliyun",
+    )
+
+
+async def cloudru_rerank(
+    query: str,
+    documents: List[str],
+    top_n: Optional[int] = None,
+    api_key: Optional[str] = None,
+    model: str = "BAAI/bge-reranker-v2-m3",
+    base_url: str = "https://foundation-models.api.cloud.ru/score",
+    extra_body: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Rerank documents using Cloud.ru Foundation Models API.
+
+    Cloud.ru exposes reranking via a dedicated /score endpoint that accepts
+    a query in text_1 and candidate documents in text_2.
+    """
+    if api_key is None:
+        api_key = os.getenv("CLOUDRU_API_KEY") or os.getenv("RERANK_BINDING_API_KEY")
+
+    request_body = {"encoding_format": "float"}
+    if extra_body:
+        request_body.update(extra_body)
+
+    return await generic_rerank_api(
+        query=query,
+        documents=documents,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        top_n=top_n,
+        return_documents=False,
+        extra_body=request_body,
+        response_format="cloudru",
+        request_format="cloudru",
     )
 
 

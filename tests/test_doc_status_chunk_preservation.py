@@ -1279,6 +1279,67 @@ async def test_pipeline_cancellation_repairs_placeholder_file_path_for_queued_do
 
 
 @pytest.mark.asyncio
+async def test_startup_recovery_marks_stale_processing_docs_failed(tmp_path):
+    rag = await _build_rag(tmp_path, "startup_processing_recovery", _deterministic_chunking)
+    try:
+        doc_id = "doc-startup-recovery"
+        now = datetime.now(timezone.utc).isoformat()
+
+        await rag.full_docs.upsert(
+            {
+                doc_id: {
+                    "content": "startup recovery doc",
+                    "file_path": "recovered-at-startup.md",
+                }
+            }
+        )
+        await rag.doc_status.upsert(
+            {
+                doc_id: {
+                    "status": DocStatus.PROCESSING,
+                    "content_summary": "stale processing",
+                    "content_length": 21,
+                    "chunks_count": 2,
+                    "chunks_list": ["chunk-a", "chunk-b"],
+                    "created_at": now,
+                    "updated_at": now,
+                    "file_path": "unknown_source",
+                    "track_id": "track-startup-recovery",
+                    "error_msg": "",
+                    "metadata": {"processing_start_time": 123},
+                }
+            }
+        )
+
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
+        async with pipeline_status_lock:
+            pipeline_status.pop("startup_recovery_done", None)
+
+        recovered = await rag._recover_interrupted_processing_documents()
+        assert recovered == 1
+
+        recovered_status = await rag.doc_status.get_by_id(doc_id)
+        assert recovered_status is not None
+        assert _status_to_text(recovered_status["status"]) == "failed"
+        assert recovered_status["file_path"] == "recovered-at-startup.md"
+        assert recovered_status["chunks_list"] == ["chunk-a", "chunk-b"]
+        assert recovered_status["chunks_count"] == 2
+        assert (
+            recovered_status["error_msg"]
+            == "Processing interrupted before completion; marked failed during startup recovery."
+        )
+        assert recovered_status["metadata"]["processing_start_time"] == 123
+        assert "recovery_time" in recovered_status["metadata"]
+    finally:
+        await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
 async def test_delete_doc_entries_guard_prevents_zombie_record(tmp_path, monkeypatch):
     """When doc_status.delete fails, the guard must not re-create a zombie record.
 

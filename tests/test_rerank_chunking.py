@@ -11,6 +11,8 @@ from lightrag.rerank import (
     chunk_documents_for_rerank,
     aggregate_chunk_scores,
     cohere_rerank,
+    cloudru_rerank,
+    generic_rerank_api,
 )
 
 
@@ -504,6 +506,86 @@ class TestCohereRerankChunking:
             assert len(result) == 1
             assert result[0]["index"] == 0
             assert result[0]["relevance_score"] == 0.9
+
+
+@pytest.mark.offline
+class TestCloudRURerank:
+    """Tests for Cloud.ru rerank compatibility."""
+
+    @pytest.mark.asyncio
+    async def test_cloudru_rerank_default_parameters(self):
+        documents = ["doc1"]
+        query = "test"
+
+        with patch(
+            "lightrag.rerank.generic_rerank_api", new_callable=AsyncMock
+        ) as mock_api:
+            mock_api.return_value = [{"index": 0, "relevance_score": 0.9}]
+
+            result = await cloudru_rerank(
+                query=query, documents=documents, api_key="test-key"
+            )
+
+            call_kwargs = mock_api.call_args[1]
+            assert call_kwargs["model"] == "BAAI/bge-reranker-v2-m3"
+            assert call_kwargs["base_url"] == "https://foundation-models.api.cloud.ru/score"
+            assert call_kwargs["request_format"] == "cloudru"
+            assert call_kwargs["response_format"] == "cloudru"
+            assert call_kwargs["extra_body"] == {"encoding_format": "float"}
+            assert len(result) == 1
+            assert result[0]["index"] == 0
+            assert result[0]["relevance_score"] == 0.9
+
+    @pytest.mark.asyncio
+    async def test_generic_rerank_api_cloudru_request_and_response(self):
+        documents = ["doc1", "doc2"]
+        captured_payload = {}
+
+        mock_response = Mock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(
+            return_value={
+                "data": [
+                    {"index": 0, "score": 0.3},
+                    {"index": 1, "score": 0.9},
+                ]
+            }
+        )
+        mock_response.request_info = None
+        mock_response.history = None
+        mock_response.headers = {}
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=None)
+
+        def capture_post(*args, **kwargs):
+            captured_payload.update(kwargs.get("json", {}))
+            return mock_response
+
+        mock_session = Mock()
+        mock_session.post = Mock(side_effect=capture_post)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("lightrag.rerank.aiohttp.ClientSession", return_value=mock_session):
+            result = await generic_rerank_api(
+                query="test query",
+                documents=documents,
+                model="BAAI/bge-reranker-v2-m3",
+                base_url="https://foundation-models.api.cloud.ru/score",
+                api_key="test-key",
+                top_n=1,
+                response_format="cloudru",
+                request_format="cloudru",
+                extra_body={"encoding_format": "float"},
+            )
+
+        assert captured_payload == {
+            "model": "BAAI/bge-reranker-v2-m3",
+            "encoding_format": "float",
+            "text_1": "test query",
+            "text_2": documents,
+        }
+        assert result == [{"index": 1, "relevance_score": 0.9}]
 
 
 @pytest.mark.offline

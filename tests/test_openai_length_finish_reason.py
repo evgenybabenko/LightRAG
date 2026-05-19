@@ -92,6 +92,7 @@ async def test_length_finish_reason_returns_raw_content():
             prompt="Extract entities",
             response_format={"type": "json_object"},
             max_completion_tokens=128,
+            use_responses_api=False,
         )
 
     assert result == raw_json
@@ -115,6 +116,7 @@ async def test_json_object_response_format_forwarded_to_create():
             model="test-model",
             prompt="Extract keywords",
             response_format={"type": "json_object"},
+            use_responses_api=False,
         )
 
     assert result == '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
@@ -140,6 +142,7 @@ async def test_legacy_entity_extraction_emits_deprecation_warning():
                 model="test-model",
                 prompt="Extract entities",
                 entity_extraction=True,
+                use_responses_api=False,
             )
 
     fake_client.chat.completions.create.assert_awaited_once()
@@ -163,6 +166,7 @@ async def test_legacy_keyword_extraction_emits_deprecation_warning():
                 model="test-model",
                 prompt="Extract keywords",
                 keyword_extraction=True,
+                use_responses_api=False,
             )
 
     fake_client.chat.completions.create.assert_awaited_once()
@@ -189,6 +193,7 @@ async def test_typed_response_format_is_rejected():
                 model="test-model",
                 prompt="Extract entities",
                 response_format=FakeSchemaModel,
+                use_responses_api=False,
             )
 
     fake_client.chat.completions.create.assert_not_awaited()
@@ -216,6 +221,7 @@ async def test_streaming_structured_output_disables_cot():
             stream=True,
             enable_cot=True,
             response_format={"type": "json_object"},
+            use_responses_api=False,
         )
         chunks = []
         async for chunk in stream:

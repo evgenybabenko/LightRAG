@@ -1425,8 +1425,80 @@ class LightRAG:
                     # logger.debug(f"Initializing storage: {storage}")
                     await storage.initialize()
 
+            await self._recover_interrupted_processing_documents()
+
             self._storages_status = StoragesStatus.INITIALIZED
             logger.debug("All storage types initialized")
+
+    async def _recover_interrupted_processing_documents(self) -> int:
+        """Mark stale PROCESSING documents as FAILED during startup recovery.
+
+        When the server restarts while a document is mid-processing, the task may
+        be cancelled before doc_status is updated, leaving the UI stuck on
+        "processing" forever. Recover those rows on startup so users can retry.
+        """
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=self.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=self.workspace
+        )
+
+        async with pipeline_status_lock:
+            if pipeline_status.get("startup_recovery_done", False):
+                return 0
+            pipeline_status["startup_recovery_done"] = True
+
+        processing_docs = await self.doc_status.get_docs_by_status(DocStatus.PROCESSING)
+        if not processing_docs:
+            return 0
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        recovery_timestamp = int(time.time())
+        recovery_error = (
+            "Processing interrupted before completion; marked failed during startup recovery."
+        )
+        recovery_updates: dict[str, dict[str, Any]] = {}
+
+        for doc_id, status_doc in processing_docs.items():
+            content_data = await self.full_docs.get_by_id(doc_id)
+            preserved_chunks_list, preserved_chunks_count = _chunk_fields_from_status_doc(
+                status_doc
+            )
+            resolved_file_path = _resolve_doc_file_path(
+                status_doc=status_doc,
+                content_data=content_data,
+            )
+
+            metadata = dict(getattr(status_doc, "metadata", {}) or {})
+            metadata["recovery_time"] = recovery_timestamp
+
+            recovery_updates[doc_id] = {
+                "status": DocStatus.FAILED,
+                "content_summary": status_doc.content_summary,
+                "content_length": status_doc.content_length,
+                "chunks_count": preserved_chunks_count,
+                "chunks_list": preserved_chunks_list,
+                "created_at": status_doc.created_at or now_iso,
+                "updated_at": now_iso,
+                "file_path": resolved_file_path,
+                "track_id": getattr(status_doc, "track_id", ""),
+                "error_msg": recovery_error,
+                "metadata": metadata,
+            }
+
+        await self.doc_status.upsert(recovery_updates)
+
+        async with pipeline_status_lock:
+            recovery_message = (
+                "Recovered "
+                f"{len(recovery_updates)} interrupted document(s) from PROCESSING to FAILED status"
+            )
+            logger.warning(recovery_message)
+            pipeline_status["latest_message"] = recovery_message
+            pipeline_status["history_messages"].append(recovery_message)
+
+        return len(recovery_updates)
 
     async def finalize_storages(self):
         """Asynchronously finalize the storages with improved error handling"""

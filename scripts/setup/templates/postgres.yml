@@ -1,5 +1,8 @@
   postgres:
-    image: gzdaniel/postgres-for-rag:16.6
+    image: lightrag-postgres:local
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
     # ports:
     #   - "5432:5432"
     volumes:
